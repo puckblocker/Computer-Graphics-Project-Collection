@@ -1,0 +1,60 @@
+// Camera & Viewport
+cam_view_update_src = `
+  // TODO: Update the following values using image, camera, and viewport:
+  //    - camera.basis (Basis): The three basis vectors for the camera and viewport space
+  // Building the view frame
+  let upNorm : vec3f = normalize(camera.up);
+  let gazeNorm : vec3f = normalize(camera.gaze);
+  var u : vec3f = cross(upNorm, gazeNorm);
+  let upNorm2 : vec3f = (cross(u, gazeNorm));
+
+  // Sets camera basis
+  camera.basis.xhat = u;
+  camera.basis.yhat = upNorm2;
+  camera.basis.zhat = -gazeNorm;
+
+  //    - viewport.origin (vec3f): The viewport's origin
+  let viewCenter : vec3f = camera.origin + (camera.f*camera.gaze);
+  //viewport.origin = viewCenter - (0.5*viewport.width*u) - (0.5*viewport.height*upNorm2) + 0.5*(u + upNorm2); // ASK WHY THIS DOESNT WORK
+  viewport.origin = viewCenter - (0.5*viewport.width*u) - (0.5*viewport.height*upNorm2);
+
+  //    - image.pixel_width (f32): The width of an individual pixel
+  image.pixel_width = viewport.width / f32(image.width);
+
+  //    - image.pixel_height (f32): The height of an individual pixel
+  image.pixel_height = viewport.height / f32(image.height);
+`
+
+// Ray Generation
+generate_ray_src = `
+// TODO: If you want to calculate any constants to use elsewhere, do so here.
+
+// The function to generate the rays. Returns both the ray origin on the viewport
+// and the ray direction.
+//
+// ray has two elements:
+//   - ray.origin (vec3f): The ray's origin on the viewport (at the pixel center)
+//   - ray.direction (vec3f): The ray's direction. Should be normalized.
+fn generate_ray(i : u32, j : u32) -> ray_struct
+{
+  var ray : ray_struct;
+
+  // TODO: Calculate and set the ray.origin and ray.direction
+  // The default (which you will replace) is a ray from the origin with no
+  // orientation
+
+  ray.origin = viewport.origin + (f32(i)*image.pixel_width*camera.basis.xhat) + (f32(j)*image.pixel_height*camera.basis.yhat);
+
+  ray.direction = normalize(ray.origin - camera.origin);
+  return ray;
+}
+`
+
+// Color
+set_color_src = `
+  // TODO: Set the color (a vec3f). The shader variable ray holds the current
+  // ray's data.
+
+  // The default color (which you will replace) is white
+  color = vec3f((10*abs(ray.direction.x)), (10*abs(ray.direction.y)), 0);
+`
