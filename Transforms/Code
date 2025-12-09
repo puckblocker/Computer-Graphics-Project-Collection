@@ -1,0 +1,383 @@
+// Camera & Viewport
+cam_view_update_src = `
+  // TODO: Update the following values using image, camera, and viewport:
+  //    - camera.basis (Basis): The three basis vectors for the camera and viewport space
+  // Building the view frame
+  let upNorm : vec3f = normalize(camera.up);
+  let gazeNorm : vec3f = normalize(camera.gaze);
+  var u : vec3f = cross(upNorm, gazeNorm);
+  let upNorm2 : vec3f = (cross(u, gazeNorm));
+
+// Sets camera basis
+  camera.basis.xhat = u;
+  camera.basis.yhat = upNorm2;
+
+//    - viewport.origin (vec3f): The viewport's origin
+  let viewCenter : vec3f = camera.origin + (camera.f*camera.gaze);
+  //viewport.origin = viewCenter - (0.5*viewport.width*u) - (0.5*viewport.height*upNorm2) + 0.5*(u + upNorm2); // ASK WHY THIS DOESNT WORK
+  viewport.origin = viewCenter - (0.5*viewport.width*u) - (0.5*viewport.height*upNorm2);
+
+  //    - image.pixel_width (f32): The width of an individual pixel
+  image.pixel_width = viewport.width / f32(image.width);
+
+  //    - image.pixel_height (f32): The height of an individual pixel
+  image.pixel_height = viewport.height / f32(image.height);
+  camera.basis.zhat = -gazeNorm;
+
+`
+
+// Ray Generation
+generate_ray_src = `
+// TODO: If you want to calculate any constants to use elsewhere, do so here.
+
+// The function to generate the rays. Returns both the ray origin on the viewport
+// and the ray direction.
+//
+// ray has two elements:
+//   - ray.origin (vec3f): The ray's origin on the viewport (at the pixel center)
+//   - ray.direction (vec3f): The ray's direction. Should be normalized.
+fn generate_ray(i : u32, j : u32) -> ray_struct
+{
+  var ray : ray_struct;
+
+  // TODO: Calculate and set the ray.origin and ray.direction
+  // The default (which you will replace) is a ray from the origin with no
+  // orientation
+  // Coords in viewport space in global
+  let u :f32 = (f32(i)+0.5) * image.pixel_width - .5 * viewport.width;  // Fixes centering
+  let v: f32 = (f32(j)+0.5) * image.pixel_height - .5 * viewport.height;
+
+  // Position in local
+  let viewportPos : vec4f = vec4f(u,v, camera.f, 1.0);
+
+  // Local to Global
+  var viewportGlob : mat4x4f = mat4x4f(
+                      vec4f(camera.basis.xhat.x, camera.basis.yhat.x,                                    camera.basis.zhat.x, 0.0),
+                      vec4f(camera.basis.xhat.y, camera.basis.yhat.y,                                    camera.basis.zhat.y, 0.0),
+                      vec4f(camera.basis.xhat.z, camera.basis.yhat.z,                                    camera.basis.zhat.z, 0.0),
+                      vec4f(camera.origin.x, camera.origin.y, camera.origin.z,                           1.0));
+  // Grab Position in global coords
+  let globPos : vec4f = viewportGlob * viewportPos;
+  ray.origin = camera.origin;
+  ray.direction = normalize(vec3f(globPos.x, globPos.y, globPos.z) - camera.origin);
+  return ray;
+}
+`
+
+// Sphere Implementation
+sphere_src = `
+fn intersect_sphere(ray : ray_struct, sphere : sphere_struct) -> hit_info_struct
+{
+  var hit_info = populate_hit(sphere.object_id);
+
+  // TODO: Intersect the transformed ray with the sphere. If there is an intersection, update the
+  // hit_info.
+  // Note, we cannot mutate the ray variable, so we will need to create a copy for the transformed ray.
+
+  // Variables
+  var objIndx : i32 = i32(sphere.object_id);
+  var parIndx : i32 = -1;
+  var parTrn : mat4x4f;
+  var objTrn : mat4x4f;
+  var idntMat : mat4x4f = mat4x4f(
+      vec4f(1.0, 0.0, 0.0, 0.0),
+      vec4f(0.0, 1.0, 0.0, 0.0),
+      vec4f(0.0, 0.0, 1.0, 0.0),
+      vec4f(0.0, 0.0, 0.0, 1.0));
+  parTrn = idntMat;
+
+  // Object Indices
+  for (var i : i32 = 0; i < i32(arrayLength(&xform_array)); i++)
+  {
+    if(xform_array[i].object == objIndx)
+    {
+      parIndx = xform_array[i].parent;
+    } 
+  }
+
+  // Check for global parent
+  while (parIndx != -1)
+  {
+    parTrn = xform_array[parIndx].transform * parTrn;
+    parIndx = xform_array[parIndx].parent;
+  }
+  
+  // Matrix multiplication
+  objTrn = parTrn * xform_array[objIndx].transform;
+
+  // Intersection Code
+  // Inverse
+  var scale = length(objTrn[0].xyz);
+  var invScale = 1.0 / scale;
+  var rot = mat3x3f (
+            vec3f(objTrn[0].x, objTrn[1].x, objTrn[2].x),
+            vec3f(objTrn[0].y, objTrn[1].y, objTrn[2].y),
+            vec3f(objTrn[0].z, objTrn[1].z, objTrn[2].z));
+  var invRot = transpose(rot);
+  var transp = objTrn[3].xyz;
+  var invTransp = -(invRot * transp);
+
+  // Frame Change Ray
+  let fcGlobal = mat4x4f(
+                vec4f(invRot[0] * invScale, 0.0),
+                vec4f(invRot[1] * invScale, 0.0),
+                vec4f(invRot[2] * invScale, 0.0),
+                vec4f(invTransp, 1.0)) ;
+  var localRay : ray_struct;
+  localRay.origin = (fcGlobal * vec4f(ray.origin, 1.0)).xyz;
+  localRay.direction = normalize((fcGlobal * vec4f(ray.direction, 0.0)).xyz);
+
+  // Variables
+  var a : f32 = dot(localRay.direction, localRay.direction);
+  var b : f32 = 2 * dot(localRay.origin - sphere.center, localRay.direction);
+  var c : f32 = dot(localRay.origin - sphere.center, localRay.origin -          sphere.center) - (sphere.radius * sphere.radius);
+
+  // Intersection variable
+  var discrim : f32 = (b*b) - 4*(a*c);
+
+  // Intersection Distance Variables
+  var tPos : f32 = (-b + sqrt(discrim)) / (2*a);
+  var tNeg : f32 = (-b - sqrt(discrim)) / (2*a);
+  var t : f32;
+
+  // Intersection Distance
+  if (tPos < tNeg && tPos >= 0)
+  {
+    t = tPos;
+  }
+  else if (tNeg < tPos && tNeg >= 0)
+  {
+    t = tNeg;
+  } 
+
+  // Intersection Count
+  // No Intersection
+  if (discrim < 0)
+  {
+    hit_info.valid = false;
+  }
+  // 1 Intersection
+  else if(discrim == 0)
+  {
+    hit_info.distance = t;
+    hit_info.valid = true;
+  }
+  // 2 Intersection
+  else
+  {
+    hit_info.distance = t;
+    hit_info.valid = true;
+  } 
+
+  return hit_info;
+}
+`
+
+// Ellipse Implementation
+ellipse_src = `
+fn intersect_ellipse(ray : ray_struct, ellipse : ellipse_struct) -> hit_info_struct
+{
+  var hit_info = populate_hit(ellipse.object_id);
+
+  // TODO: Intersect ray with the ellipse. If there is an intersection, update the
+  // hit_info. Use the same code as for a sphere, but transform the ray appropritely first.
+
+
+  // Variables
+  var objIndx : i32 = i32(ellipse.object_id);
+  var parIndx : i32 = -1;
+  var parTrn : mat4x4f;
+  var objTrn : mat4x4f;
+  var idntMat : mat4x4f = mat4x4f(
+      vec4f(1.0, 0.0, 0.0, 0.0),
+      vec4f(0.0, 1.0, 0.0, 0.0),
+      vec4f(0.0, 0.0, 1.0, 0.0),
+      vec4f(0.0, 0.0, 0.0, 1.0));
+  parTrn = idntMat;
+
+  // Object Indices
+  for (var i : i32 = 0; i < i32(arrayLength(&xform_array)); i++)
+  {
+    if(xform_array[i].object == objIndx)
+    {
+      parIndx = xform_array[i].parent;
+    } 
+  }
+
+  while (parIndx != -1)
+  {
+    parTrn = xform_array[parIndx].transform * parTrn;
+    parIndx = xform_array[parIndx].parent;
+  }
+
+  // Check for Global Parent
+  //if (parIndx != -1)  // Parent is not global, use parent's coords
+  //{
+   //parTrn = xform_array[parIndx].transform;
+  //}
+  //else  // Parent is Global, use global coords
+  //{
+    //parTrn = idntMat;
+  //}
+  
+  // Matrix multiplication
+  objTrn = parTrn * xform_array[objIndx].transform;
+
+  // Intersection Code
+  // Inverse
+  var scale = length(objTrn[0].xyz);
+  var invScale = 1.0 / scale;
+  var rot = mat3x3f (
+            vec3f(objTrn[0].x, objTrn[1].x, objTrn[2].x),
+    vec3f(objTrn[0].y, objTrn[1].y, objTrn[2].y),
+    vec3f(objTrn[0].z, objTrn[1].z, objTrn[2].z));
+  var invRot = transpose(rot);
+  var transp = objTrn[3].xyz;
+  var invTransp = -(invRot * (transp * invScale));
+
+  // Frame Change Ray
+  let fcGlobal = mat4x4f(
+                vec4f(invRot[0] * invScale, 0.0),
+                vec4f(invRot[1] * invScale, 0.0),
+                vec4f(invRot[2] * invScale, 0.0),
+                vec4f(invTransp, 1.0)) ;
+  var localRay : ray_struct;
+  localRay.origin = (fcGlobal * vec4f(ray.origin, 1.0)).xyz;
+  localRay.direction = normalize((fcGlobal * vec4f(ray.direction, 0.0)).xyz);
+
+  var 
+
+  // Transform into Sphere
+  unitCircRay : ray_struct;
+  unitCircRay.origin = localRay.origin / ellipse.radii;
+  unitCircRay.direction = normalize(localRay.direction / ellipse.radii); 
+
+  var unitCirc : sphere_struct;
+  unitCirc.object_id = ellipse.object_id;
+  unitCirc.center = vec3f(0.0,0.0,0.0);
+  unitCirc.radius = 1.0;
+
+  // Intersection Code
+  hit_info = intersect_sphere(unitCircRay, unitCirc);
+
+  return hit_info;
+}
+`
+
+// Plane Intersection
+plane_src = `
+fn intersect_plane(ray : ray_struct, plane : plane_struct) -> hit_info_struct
+{
+  var hit_info = populate_hit(plane.object_id);
+
+  // TODO: Intersect transformed ray with the plane. If there is an intersection, update the
+  // hit_info.
+  // Note, we cannot mutate the ray variable, so we will need to create a copy for the transformed ray.
+  // Variables
+  var objIndx : i32 = i32(plane.object_id);
+  var parIndx : i32 = -1;
+  var parTrn : mat4x4f;
+  var objTrn : mat4x4f;
+  var idntMat : mat4x4f = mat4x4f(
+      vec4f(1.0, 0.0, 0.0, 0.0),
+      vec4f(0.0, 1.0, 0.0, 0.0),
+      vec4f(0.0, 0.0, 1.0, 0.0),
+      vec4f(0.0, 0.0, 0.0, 1.0));
+  parTrn = idntMat;
+
+  // Object Indices
+  for (var i : i32 = 0; i < i32(arrayLength(&xform_array)); i++)
+  {
+    if(xform_array[i].object == objIndx)
+    {
+      parIndx = xform_array[i].parent;
+    } 
+  }
+
+  while (parIndx != -1)
+  {
+    parTrn = xform_array[parIndx].transform * parTrn;
+    parIndx = xform_array[parIndx].parent;
+  }
+
+  // Check for Global Parent
+  //if (parIndx != -1)  // Parent is not global, use parent's coords
+  //{
+   //parTrn = xform_array[parIndx].transform;
+  //}
+  //else  // Parent is Global, use global coords
+  //{
+    //parTrn = idntMat;
+  //}
+  
+  // Matrix multiplication
+  objTrn = parTrn * xform_array[objIndx].transform;
+
+  // Intersection Code
+  // Inverse
+  var scale = length(objTrn[0].xyz);
+  var invScale = 1.0 / scale;
+  var rot = mat3x3f (
+            vec3f(objTrn[0].x, objTrn[1].x, objTrn[2].x),
+    vec3f(objTrn[0].y, objTrn[1].y, objTrn[2].y),
+    vec3f(objTrn[0].z, objTrn[1].z, objTrn[2].z));
+  var invRot = transpose(rot);
+  var transp = objTrn[3].xyz;
+  var invTransp = -(invRot * (transp * invScale));
+
+  // Frame Change Ray
+  let fcGlobal = mat4x4f(
+                vec4f(invRot[0] * invScale, 0.0),
+                vec4f(invRot[1] * invScale, 0.0),
+                vec4f(invRot[2] * invScale, 0.0),
+                vec4f(invTransp, 1.0)) ;
+  var localRay : ray_struct;
+  localRay.origin = (fcGlobal * vec4f(ray.origin, 1.0)).xyz;
+  localRay.direction = normalize((fcGlobal * vec4f(ray.direction, 0.0)).xyz);
+
+  // Intersection
+  var t : f32 = -dot(localRay.origin - plane.point, plane.normal) / dot(localRay.direction, plane.normal);
+
+  // Intersection Miss
+  if (approx_equal(dot(localRay.direction, plane.normal), 0.0) && dot(plane.point - localRay.origin, plane.normal) != 0)
+  {
+    hit_info.valid = false;
+  }
+  // Intersection Hit
+  else
+  {
+    hit_info.valid = true;
+    hit_info.distance = t;
+  }
+
+  return hit_info;
+}
+`
+
+// Color
+set_color_src = `
+  // TODO: Set the color (a vec3f). The shader variables ray & hit_info holds the current
+  // ray's datafo.
+  // The default color (which you will replace if an object was hit) is white
+  // Detect Valid Hit
+  if(hit_info.valid == true)
+  {
+    // Loop for number of objects in scene
+    for(var i : i32 = 0; i <= i32(num_objects); i++)
+    {
+      // Change color for each object
+      if (i32(hit_info.object_id) == i)
+      {
+        color.x = f32(i) / f32(num_objects);
+        color.y = f32(i) / (f32(num_objects) *2);
+        color.z = f32(i) / f32(num_objects);
+      }
+    }
+  }
+  // Return White if No Valid Hits
+  else
+  {
+    color = vec3f(1, 1, 1);
+  }
+`
+
